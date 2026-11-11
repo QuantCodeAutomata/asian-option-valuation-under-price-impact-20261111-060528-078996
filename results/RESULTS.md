@@ -201,6 +201,16 @@ reproduced, same identified grid-resolution cause as Experiment 2).
   equivalent (reduced-grid) column is produced, because each additional `N`
   requires a full Bellman sweep at the same prohibitive cost. This is listed
   again under "Not reproduced" below.
+- A sensitivity check on Panel A (geometric, no dealer impact) with the
+  `Q_t`, `I_t`, and `S_t` grids roughly doubled (15/5/23 nodes instead of
+  9/3/15, `N` unchanged at 8) moves the `Q_0=1` spread from `1.475` (executed
+  grid) to `1.134`, closer to the paper's `1.021` (`N=25`) / `1.018`
+  (extrapolated), while the bid and ask levels stay 1.5-2.5 above the paper's
+  values. This localizes part of the Table 2 gap to the coarseness of the
+  `Q_t/I_t/S_t` grids (spread converges towards the paper as nodes increase)
+  but shows the level gap is not fully explained by grid resolution alone;
+  the remaining level difference's cause was not identified within the time
+  available.
 - Experiment 3's neural-network training budget
   (`NN_TRAIN_RUNS_RUN=2` runs of `NN_GPI_OUTER_ITERS_RUN=8` GPI sweeps /
   `NN_DGM_TRAIN_STEPS_RUN=1500` DGM gradient steps, `POLICY_MC_PATHS_RUN=20,000`
