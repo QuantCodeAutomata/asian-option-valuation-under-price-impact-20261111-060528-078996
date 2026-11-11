@@ -211,6 +211,17 @@ reproduced, same identified grid-resolution cause as Experiment 2).
   but shows the level gap is not fully explained by grid resolution alone;
   the remaining level difference's cause was not identified within the time
   available.
+- Two further component checks on the same `Q_0=1`, Panel A node: (1)
+  refining only the time grid from `N=8` to `N=12` (same `Q_t/I_t/S_t`
+  nodes) moves the ask from `7.4605` to `8.0438` and the bid from `5.9855`
+  to `6.4022`, i.e. away from the paper's `N=25` values, in the same
+  direction as the paper's own `N=25 -> extrapolated` move (`4.2552 ->
+  4.4781` ask); (2) refining only the trading-rate grid from 7 to the
+  paper's 15 rates at `N=8` leaves the ask/bid practically unchanged
+  (`7.4270`/`5.9987` vs `7.4605`/`5.9855`). Neither the time-step count nor
+  the rate-grid density is therefore the dominant source of the persistent
+  `Q_t/I_t/S_t`-grid-independent level gap; the cause of that remaining gap
+  was not identified within the time available for this replication.
 - Experiment 3's neural-network training budget
   (`NN_TRAIN_RUNS_RUN=2` runs of `NN_GPI_OUTER_ITERS_RUN=8` GPI sweeps /
   `NN_DGM_TRAIN_STEPS_RUN=1500` DGM gradient steps, `POLICY_MC_PATHS_RUN=20,000`
