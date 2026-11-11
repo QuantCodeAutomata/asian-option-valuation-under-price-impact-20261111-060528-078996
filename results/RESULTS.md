@@ -99,13 +99,14 @@ resolution), not in magnitude: **not reproduced** (Table 2 Bellman column,
 Table 4).
 
 Table 5 (`exp2_table5.csv`, deterministic path with zero shocks) reproduces
-the paper's qualitative description: the option seller (`theta=+1`) trades at
+the paper's qualitative description — the option seller (`theta=+1`) trades at
 a positive rate and the buyer (`theta=-1`) at the negative of that rate at
-every reported date, inventory starts at zero and moves away from zero before
-being worked back toward zero by maturity: **reproduced** (direction and
-symmetry only; the executed grid's first-date geometric buyer rate is
-`-7.8e-15≈0` rather than the paper's `-2.1429`, consistent with the same
-grid-resolution gap documented above): **partially reproduced**.
+every reported date, and inventory starts at zero and moves away from zero
+before being worked back toward zero by maturity — but not its reported rate
+levels: the executed grid's first-date geometric buyer rate is
+`-7.8e-15 ≈ 0` rather than the paper's `-2.1429`, a difference consistent
+with the same coarser-grid gap documented above for Tables 2 and 4:
+**partially reproduced** (sign and symmetry only).
 
 Figure 4 (`exp2_figure4.csv/png`, geometric Asian, `K=90`, execution premium
 in basis points and hedge position `Q_t` against time for the four
