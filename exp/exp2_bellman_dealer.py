@@ -87,7 +87,9 @@ def run_table2() -> pd.DataFrame:
     rows = []
     stored = {}
     for label, h_kind, lbt, lbp in panels:
+        t_panel = time.time()
         out, grids = run_case(h_kind, lbt, lbp, store_policy=True)
+        print(f"  table2 panel {label} done in {time.time() - t_panel:.1f}s", flush=True)
         stored[label] = (out, grids, h_kind, lbt, lbp)
         for Q0 in cfg.EXP2_Q0_GRID:
             q = quotes_at(out, grids, Q0)
@@ -116,9 +118,11 @@ def run_table4() -> pd.DataFrame:
             )
             params.update(set_params(x))
             for h_kind in ("geometric", "arithmetic"):
+                t_cell = time.time()
                 out, grids = run_case(h_kind, params["lambda_bar_T"], params["lambda_bar_P"],
                                        kappa_J=params["kappa_J"], k_A=params["k_A"], k_B=params["k_B"],
                                        psi=params["psi"], gamma=params["gamma"])
+                print(f"  table4 panel {label} x={x} h={h_kind} done in {time.time() - t_cell:.1f}s", flush=True)
                 q = quotes_at(out, grids, 0.0)
                 ref = reference_price(h_kind)
                 rows.append({

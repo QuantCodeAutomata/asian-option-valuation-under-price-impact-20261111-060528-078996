@@ -59,18 +59,45 @@ def make_grids(
     j_bound = Q_bar + nu_bar / max(kappa_J, 0.1)
     j_grid = np.linspace(-j_bound, j_bound, n_j)
 
-    # A_t = integral_0^t h(S_u) du starts at 0 at t=0 and must stay inside the
-    # grid throughout the backward induction; the range spans from 0 to the
-    # extreme accumulation h(S_grid)*T, with a small margin for interpolation.
-    h_lo, h_hi = h_func(s_grid[0], h_kind), h_func(s_grid[-1], h_kind)
-    a_lo, a_hi = min(0.0, h_lo * T), max(0.0, h_hi * T)
-    margin = 0.05 * max(a_hi - a_lo, 1.0)
-    a_grid = np.linspace(a_lo - margin, a_hi + margin, n_a)
+    # A_t = integral_0^t h(S_u) du starts at 0 at t=0 and reaches, by t=T, a
+    # value concentrated around T*h(S0) with a standard deviation given by the
+    # geometric-Asian variance formula v_Z(0) = sigma^2*T^3/3 (Theorem 3.2):
+    # centering the grid on the analytic mean/width of the realized integral,
+    # instead of on the extreme corner-to-corner range implied by the S grid,
+    # keeps resolution where the terminal payoff's curvature matters. Using
+    # the extreme-corner range here would spread the same number of nodes
+    # over a region orders of magnitude wider than where probability mass
+    # actually lies, biasing the interpolated (convex) payoff upward.
+    std_log_integral = sigma * np.sqrt(T**3 / 3.0)
+    if h_kind == "geometric":
+        a_center = T * np.log(S0)
+        a_half_width = max(8.0 * std_log_integral, 0.2)
+    else:
+        a_center = T * S0
+        a_half_width = max(8.0 * S0 * std_log_integral, 0.2 * S0)
+    a_lo = min(0.0, a_center - a_half_width)
+    a_hi = max(a_center + a_half_width, a_center)
+    a_grid = np.linspace(a_lo, a_hi, n_a)
 
     return Grids(s=s_grid, i=i_grid, q=q_grid, j=j_grid, a=a_grid, h_kind=h_kind)
 
 
 _CORNERS = list(itertools.product([0, 1], repeat=5))
+
+
+def _interp_nodes_weights(grids: Grids, qs: tuple[np.ndarray, ...]) -> tuple[list, list, tuple]:
+    """Lower-corner indices and interpolation weights per dimension, plus grid shape."""
+    axes = (grids.s, grids.i, grids.q, grids.j, grids.a)
+    shape = tuple(len(g) for g in axes)
+    idx, w = [], []
+    for g, q in zip(axes, qs):
+        qc = np.clip(q, g[0], g[-1])
+        k = np.clip(np.searchsorted(g, qc, side="right") - 1, 0, len(g) - 2)
+        denom = g[k + 1] - g[k]
+        wk = np.where(denom > 0, (qc - g[k]) / np.where(denom > 0, denom, 1.0), 0.0)
+        idx.append(k)
+        w.append(wk)
+    return idx, w, shape
 
 
 def interp5d(grids: Grids, values: np.ndarray, qs: tuple[np.ndarray, ...]) -> np.ndarray:
@@ -81,24 +108,24 @@ def interp5d(grids: Grids, values: np.ndarray, qs: tuple[np.ndarray, ...]) -> np
     (continuation values are evaluated only a short distance beyond the grid
     edges at this coarse resolution; clamping is a standard, conservative
     extrapolation rule not specified by the paper).
-    """
-    axes = (grids.s, grids.i, grids.q, grids.j, grids.a)
-    idx, w = [], []
-    for g, q in zip(axes, qs):
-        qc = np.clip(q, g[0], g[-1])
-        k = np.clip(np.searchsorted(g, qc, side="right") - 1, 0, len(g) - 2)
-        denom = g[k + 1] - g[k]
-        wk = np.where(denom > 0, (qc - g[k]) / np.where(denom > 0, denom, 1.0), 0.0)
-        idx.append(k)
-        w.append(wk)
 
+    Each of the 32 corners is gathered through a single flattened (raveled)
+    index rather than 5-way fancy indexing on the 5D array: computing one
+    ``np.ravel_multi_index`` call and a plain ``take`` on the flattened array
+    is markedly faster than numpy's advanced indexing with five integer index
+    arrays, which matters because this routine runs inside every Bellman
+    backward-induction step for every candidate trading rate and shock pair.
+    """
+    idx, w, shape = _interp_nodes_weights(grids, qs)
+    flat_values = values.reshape(-1)
     result = np.zeros_like(qs[0], dtype=float)
     for corner in _CORNERS:
         corner_idx = tuple(idx[d] + corner[d] for d in range(5))
+        flat_idx = np.ravel_multi_index(corner_idx, shape)
         weight = np.ones_like(qs[0], dtype=float)
         for d in range(5):
             weight = weight * (w[d] if corner[d] == 1 else (1.0 - w[d]))
-        result += weight * values[corner_idx]
+        result += weight * flat_values.take(flat_idx)
     return result
 
 
@@ -132,23 +159,16 @@ def _interp5d_batch(grids: Grids, values_stack: np.ndarray, qs: tuple[np.ndarray
     B value functions, giving a speed-up proportional to B over calling
     :func:`interp5d` once per value function (used to batch over theta).
     """
-    axes = (grids.s, grids.i, grids.q, grids.j, grids.a)
-    idx, w = [], []
-    for g, q in zip(axes, qs):
-        qc = np.clip(q, g[0], g[-1])
-        k = np.clip(np.searchsorted(g, qc, side="right") - 1, 0, len(g) - 2)
-        denom = g[k + 1] - g[k]
-        wk = np.where(denom > 0, (qc - g[k]) / np.where(denom > 0, denom, 1.0), 0.0)
-        idx.append(k)
-        w.append(wk)
-
+    idx, w, shape = _interp_nodes_weights(grids, qs)
+    flat_values = values_stack.reshape(values_stack.shape[0], -1)
     result = np.zeros((values_stack.shape[0],) + qs[0].shape, dtype=float)
     for corner in _CORNERS:
         corner_idx = tuple(idx[d] + corner[d] for d in range(5))
+        flat_idx = np.ravel_multi_index(corner_idx, shape)
         weight = np.ones_like(qs[0], dtype=float)
         for d in range(5):
             weight = weight * (w[d] if corner[d] == 1 else (1.0 - w[d]))
-        result += weight[None, ...] * values_stack[(slice(None),) + corner_idx]
+        result += weight[None, ...] * flat_values[:, flat_idx]
     return result
 
 
@@ -161,65 +181,70 @@ def bellman_step_batch(
     """One backward step of the Bellman recursion (88), batched over theta.
 
     ``v_next_stack`` has shape (B, *grid_shape). Returns (v_m_stack, nu_opt_stack)
-    both of shape (B, *grid_shape); the state transitions, admissible set and
-    running cost (immediate) do not depend on theta and are computed once.
+    both of shape (B, *grid_shape).
+
+    The maximization over the admissible trading rate is done by looping over
+    the (small) set of candidate rates rather than broadcasting a
+    (n_nodes, n_rates) array: with the five-dimensional state grid, n_nodes
+    already runs into the millions, and multiplying it by n_rates as well as
+    by the four shock branches would exceed the memory available for a single
+    process. The loop keeps every array at size O(n_nodes) per theta.
     """
     S, I, Q, J, A = np.meshgrid(grids.s, grids.i, grids.q, grids.j, grids.a, indexing="ij")
     shape = S.shape
-    n_nodes = S.size
-    n_rates = len(rates)
     B = v_next_stack.shape[0]
-
-    S_f, I_f, Q_f, J_f, A_f = (x.reshape(-1, 1) for x in (S, I, Q, J, A))
-    nu = rates.reshape(1, -1)
-    ones = np.ones((n_nodes, n_rates))
-
-    # Admissible rates: (79) one-sided restriction at the inventory bounds and
-    # the inventory-change bound |q + nu*dt| <= Q_bar, combined with the
-    # execution-price condition (87).
-    exec_price = S_f + lambda_bar_P * Q_f + lambda_bar_T * J_f
-    price_ok = np.broadcast_to(exec_price >= epsilon_exec, (n_nodes, n_rates))
     q_bar = grids.q[-1]
-    at_upper = np.isclose(Q_f, q_bar)
-    at_lower = np.isclose(Q_f, grids.q[0])
-    rate_ok = np.ones((n_nodes, n_rates), dtype=bool)
-    rate_ok &= ~(at_upper & (nu > 0))
-    rate_ok &= ~(at_lower & (nu < 0))
-    rate_ok &= np.abs(Q_f + nu * dt) <= q_bar + 1e-9
-    zero_rate_col = np.argmin(np.abs(rates))
-    only_zero = (np.arange(n_rates).reshape(1, -1) == zero_rate_col) & ones.astype(bool)
-    admissible = np.where(price_ok, rate_ok, only_zero)
-
-    g_rate = cash_outflow_rate(S_f * ones, Q_f * ones, J_f * ones, nu * ones,
-                                lambda_bar_P, lambda_bar_T, k_A, k_B, psi)
+    q_lo = grids.q[0]
     delta_r = (1.0 - np.exp(-r * dt)) / r if abs(r) > 1e-10 else dt
-    immediate = -np.exp(r * (T - t_m)) * delta_r * g_rate
-
-    q_next = (Q_f + nu * dt) * ones
-    j_next = (J_f + (-kappa_J * J_f + nu) * dt) * ones
-
+    disc_fv = np.exp(r * (T - t_m))
     sqrt_dt = np.sqrt(dt)
     shocks = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)]
-    exp_sum = np.zeros((B, n_nodes, n_rates))
-    for xi, zeta in shocks:
-        p = (1.0 + rho * xi * zeta) / 4.0
-        s_next = (S_f * np.exp((mu + lambda_I * I_f - 0.5 * sigma**2) * dt + sigma * sqrt_dt * xi)) * ones
-        i_next = (I_f - kappa_I * I_f * dt + eta * sqrt_dt * zeta) * ones
-        h_s = h_func(S_f, grids.h_kind) * ones
-        h_s_next = h_func(s_next, grids.h_kind)
-        a_next = A_f * ones + 0.5 * (h_s + h_s_next) * dt
+    zero_rate_idx = int(np.argmin(np.abs(rates)))
 
-        v_cont = _interp5d_batch(grids, v_next_stack, (s_next, i_next, q_next, j_next, a_next))
-        exp_sum += p * np.exp(-gamma * v_cont)
+    exec_price = S + lambda_bar_P * Q + lambda_bar_T * J
+    price_ok = exec_price >= epsilon_exec
+    at_upper = np.isclose(Q, q_bar)
+    at_lower = np.isclose(Q, q_lo)
 
-    continuation = -(1.0 / gamma) * np.log(np.maximum(exp_sum, 1e-300))
-    value = immediate[None, ...] + continuation
-    value = np.where(admissible[None, ...], value, -np.inf)
+    best_value = np.full((B,) + shape, -np.inf)
+    best_nu = np.zeros((B,) + shape)
 
-    best = np.argmax(value, axis=2)
-    v_m = np.take_along_axis(value, best[:, :, None], axis=2)[:, :, 0].reshape((B,) + shape)
-    nu_opt = rates[best].reshape((B,) + shape)
-    return v_m, nu_opt
+    for r_idx, nu in enumerate(rates):
+        rate_ok = np.ones(shape, dtype=bool)
+        if nu > 0:
+            rate_ok &= ~at_upper
+        elif nu < 0:
+            rate_ok &= ~at_lower
+        rate_ok &= np.abs(Q + nu * dt) <= q_bar + 1e-9
+        admissible = np.where(price_ok, rate_ok, r_idx == zero_rate_idx)
+
+        g_rate = cash_outflow_rate(S, Q, J, np.full(shape, nu), lambda_bar_P, lambda_bar_T, k_A, k_B, psi)
+        immediate = -disc_fv * delta_r * g_rate
+
+        q_next = Q + nu * dt
+        j_next = J + (-kappa_J * J + nu) * dt
+
+        exp_sum = np.zeros((B,) + shape)
+        for xi, zeta in shocks:
+            p = (1.0 + rho * xi * zeta) / 4.0
+            s_next = S * np.exp((mu + lambda_I * I - 0.5 * sigma**2) * dt + sigma * sqrt_dt * xi)
+            i_next = I - kappa_I * I * dt + eta * sqrt_dt * zeta
+            h_s = h_func(S, grids.h_kind)
+            h_s_next = h_func(s_next, grids.h_kind)
+            a_next = A + 0.5 * (h_s + h_s_next) * dt
+
+            v_cont = _interp5d_batch(grids, v_next_stack, (s_next, i_next, q_next, j_next, a_next))
+            exp_sum += p * np.exp(-gamma * v_cont)
+
+        continuation = -(1.0 / gamma) * np.log(np.maximum(exp_sum, 1e-300))
+        value = immediate[None, ...] + continuation
+        value = np.where(admissible[None, ...], value, -np.inf)
+
+        improve = value > best_value
+        best_value = np.where(improve, value, best_value)
+        best_nu = np.where(improve, nu, best_nu)
+
+    return best_value, best_nu
 
 
 def solve_bellman(

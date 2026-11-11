@@ -81,13 +81,13 @@ N_S_NODES_PAPER = 41   # not specified in the paper; chosen so the 5D grid in
 # Reduced executed configuration: same recursion (88), same admissible rate
 # set (87), same terminal condition, at a grid coarse enough to finish within
 # the time available. See results/RESULTS.md, "Deviations from the paper".
-N_STEPS_RUN = 10
+N_STEPS_RUN = 8
 N_RATES_RUN = 7
 N_Q_NODES_RUN = 9
 N_J_NODES_RUN = 3
-N_A_NODES_RUN = 41
+N_A_NODES_RUN = 61
 N_I_NODES_RUN = 3
-N_S_NODES_RUN = 9
+N_S_NODES_RUN = 15
 
 EXP2_Q0_GRID = np.array([0.0, 1.0, 2.0])  # Table 2 initial inventories
 
@@ -112,11 +112,11 @@ NN_HIDDEN_LAYERS = 3          # number of hidden layers; not specified in the pa
 NN_TRAIN_RUNS_PAPER = 5       # independent training runs averaged, Section 5.1 / Table 2
 NN_TRAIN_RUNS_RUN = 2         # reduced to fit the available compute time
 NN_GPI_OUTER_ITERS_PAPER = 20  # GPI policy-evaluation / improvement sweeps; not specified
-NN_GPI_OUTER_ITERS_RUN = 5
+NN_GPI_OUTER_ITERS_RUN = 8
 NN_TRAIN_STEPS_PER_ITER_PAPER = 2000  # gradient steps per sweep; not specified
-NN_TRAIN_STEPS_PER_ITER_RUN = 150
+NN_TRAIN_STEPS_PER_ITER_RUN = 300
 NN_DGM_TRAIN_STEPS_PAPER = 20000
-NN_DGM_TRAIN_STEPS_RUN = 400
+NN_DGM_TRAIN_STEPS_RUN = 1500
 NN_COLLOCATION_POINTS = 512   # collocation batch size per gradient step; not specified
 NN_LEARNING_RATE = 1e-3       # Adam learning rate; not specified in the paper
 POLICY_MC_PATHS_PAPER = 1_000_000  # Section 5.1 ("10^6 simulated paths")
