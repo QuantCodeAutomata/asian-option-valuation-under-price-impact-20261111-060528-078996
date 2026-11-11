@@ -81,12 +81,12 @@ N_S_NODES_PAPER = 41   # not specified in the paper; chosen so the 5D grid in
 # Reduced executed configuration: same recursion (88), same admissible rate
 # set (87), same terminal condition, at a grid coarse enough to finish within
 # the time available. See results/RESULTS.md, "Deviations from the paper".
-N_STEPS_RUN = 6
+N_STEPS_RUN = 10
 N_RATES_RUN = 7
-N_Q_NODES_RUN = 15
-N_J_NODES_RUN = 5
-N_A_NODES_RUN = 21
-N_I_NODES_RUN = 5
+N_Q_NODES_RUN = 9
+N_J_NODES_RUN = 3
+N_A_NODES_RUN = 41
+N_I_NODES_RUN = 3
 N_S_NODES_RUN = 9
 
 EXP2_Q0_GRID = np.array([0.0, 1.0, 2.0])  # Table 2 initial inventories

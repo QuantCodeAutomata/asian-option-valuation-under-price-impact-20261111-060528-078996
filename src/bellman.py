@@ -124,20 +124,51 @@ def terminal_value(grids: Grids, theta: int, T: float, K: float, n_claims: float
     return Q * S - L - theta * n_claims * Phi
 
 
-def bellman_step(
-    v_next: np.ndarray, grids: Grids, t_m: float, dt: float, T: float,
+def _interp5d_batch(grids: Grids, values_stack: np.ndarray, qs: tuple[np.ndarray, ...]) -> np.ndarray:
+    """Multilinear interpolation of a stack of 5D grids sharing one set of queries.
+
+    ``values_stack`` has shape (B, n_s, n_i, n_q, n_j, n_a); the index/weight
+    computation (the expensive part of :func:`interp5d`) is shared across the
+    B value functions, giving a speed-up proportional to B over calling
+    :func:`interp5d` once per value function (used to batch over theta).
+    """
+    axes = (grids.s, grids.i, grids.q, grids.j, grids.a)
+    idx, w = [], []
+    for g, q in zip(axes, qs):
+        qc = np.clip(q, g[0], g[-1])
+        k = np.clip(np.searchsorted(g, qc, side="right") - 1, 0, len(g) - 2)
+        denom = g[k + 1] - g[k]
+        wk = np.where(denom > 0, (qc - g[k]) / np.where(denom > 0, denom, 1.0), 0.0)
+        idx.append(k)
+        w.append(wk)
+
+    result = np.zeros((values_stack.shape[0],) + qs[0].shape, dtype=float)
+    for corner in _CORNERS:
+        corner_idx = tuple(idx[d] + corner[d] for d in range(5))
+        weight = np.ones_like(qs[0], dtype=float)
+        for d in range(5):
+            weight = weight * (w[d] if corner[d] == 1 else (1.0 - w[d]))
+        result += weight[None, ...] * values_stack[(slice(None),) + corner_idx]
+    return result
+
+
+def bellman_step_batch(
+    v_next_stack: np.ndarray, grids: Grids, t_m: float, dt: float, T: float,
     rates: np.ndarray, r: float, mu: float, sigma: float, lambda_I: float, kappa_I: float,
     eta: float, kappa_J: float, rho: float, gamma: float, lambda_bar_P: float,
     lambda_bar_T: float, k_A: float, k_B: float, psi: float, epsilon_exec: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """One backward step of the Bellman recursion (88), vectorized over the grid.
+    """One backward step of the Bellman recursion (88), batched over theta.
 
-    Returns (v_m, nu_opt_m), both with the grid's shape.
+    ``v_next_stack`` has shape (B, *grid_shape). Returns (v_m_stack, nu_opt_stack)
+    both of shape (B, *grid_shape); the state transitions, admissible set and
+    running cost (immediate) do not depend on theta and are computed once.
     """
     S, I, Q, J, A = np.meshgrid(grids.s, grids.i, grids.q, grids.j, grids.a, indexing="ij")
     shape = S.shape
     n_nodes = S.size
     n_rates = len(rates)
+    B = v_next_stack.shape[0]
 
     S_f, I_f, Q_f, J_f, A_f = (x.reshape(-1, 1) for x in (S, I, Q, J, A))
     nu = rates.reshape(1, -1)
@@ -169,7 +200,7 @@ def bellman_step(
 
     sqrt_dt = np.sqrt(dt)
     shocks = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)]
-    exp_sum = np.zeros((n_nodes, n_rates))
+    exp_sum = np.zeros((B, n_nodes, n_rates))
     for xi, zeta in shocks:
         p = (1.0 + rho * xi * zeta) / 4.0
         s_next = (S_f * np.exp((mu + lambda_I * I_f - 0.5 * sigma**2) * dt + sigma * sqrt_dt * xi)) * ones
@@ -178,16 +209,16 @@ def bellman_step(
         h_s_next = h_func(s_next, grids.h_kind)
         a_next = A_f * ones + 0.5 * (h_s + h_s_next) * dt
 
-        v_cont = interp5d(grids, v_next, (s_next, i_next, q_next, j_next, a_next))
+        v_cont = _interp5d_batch(grids, v_next_stack, (s_next, i_next, q_next, j_next, a_next))
         exp_sum += p * np.exp(-gamma * v_cont)
 
     continuation = -(1.0 / gamma) * np.log(np.maximum(exp_sum, 1e-300))
-    value = immediate + continuation
-    value = np.where(admissible, value, -np.inf)
+    value = immediate[None, ...] + continuation
+    value = np.where(admissible[None, ...], value, -np.inf)
 
-    best = np.argmax(value, axis=1)
-    v_m = value[np.arange(n_nodes), best].reshape(shape)
-    nu_opt = rates[best].reshape(shape)
+    best = np.argmax(value, axis=2)
+    v_m = np.take_along_axis(value, best[:, :, None], axis=2)[:, :, 0].reshape((B,) + shape)
+    nu_opt = rates[best].reshape((B,) + shape)
     return v_m, nu_opt
 
 
@@ -198,26 +229,33 @@ def solve_bellman(
     lambda_bar_P: float, lambda_bar_T: float, k_A: float, k_B: float, psi: float,
     epsilon_exec: float, store_policy: bool = False,
 ) -> dict:
-    """Backward induction of (88) for every theta in ``theta_list``.
+    """Backward induction of (88) for every theta in ``theta_list``, batched.
+
+    The B=len(theta_list) value functions share identical state transitions
+    and admissible sets at every date, so one batched Bellman step replaces
+    B separate steps (see :func:`bellman_step_batch`).
 
     Returns a dict ``{theta: {"v0": array, "policy": [nu_opt_0, ..., nu_opt_{N-1}] or None}}``.
     """
     dt = T / N
+    thetas = list(theta_list)
+    v_stack = np.stack([terminal_value(grids, th, T, K, n_claims, ell_1, Gamma_Q) for th in thetas])
+    policies = {th: ([] if store_policy else None) for th in thetas}
+    for m in range(N - 1, -1, -1):
+        t_m = m * dt
+        v_stack, nu_stack = bellman_step_batch(
+            v_stack, grids, t_m, dt, T, rates, r, mu, sigma, lambda_I, kappa_I, eta,
+            kappa_J, rho, gamma, lambda_bar_P, lambda_bar_T, k_A, k_B, psi, epsilon_exec,
+        )
+        if store_policy:
+            for b, th in enumerate(thetas):
+                policies[th].append(nu_stack[b])
     out = {}
-    for theta in theta_list:
-        v = terminal_value(grids, theta, T, K, n_claims, ell_1, Gamma_Q)
-        policy = [] if store_policy else None
-        for m in range(N - 1, -1, -1):
-            t_m = m * dt
-            v, nu_opt = bellman_step(
-                v, grids, t_m, dt, T, rates, r, mu, sigma, lambda_I, kappa_I, eta,
-                kappa_J, rho, gamma, lambda_bar_P, lambda_bar_T, k_A, k_B, psi, epsilon_exec,
-            )
-            if store_policy:
-                policy.append(nu_opt)
+    for b, th in enumerate(thetas):
+        policy = policies[th]
         if store_policy:
             policy.reverse()  # policy[m] is the optimal rate grid at time t_m
-        out[theta] = {"v0": v, "policy": policy}
+        out[th] = {"v0": v_stack[b], "policy": policy}
     return out
 
 
@@ -254,7 +292,7 @@ def simulate_deterministic_path(
     for theta, data in policy_by_theta.items():
         policy = data["policy"]
         s, i, q, j, a = S0, I0, Q0, J0, 0.0
-        times, rates_path, q_path, j_path = [], [], [], []
+        times, rates_path, q_path, j_path, s_path = [], [], [], [], [s]
         for m in range(N):
             t_m = m * dt
             query = (np.array([s]), np.array([i]), np.array([q]), np.array([j]), np.array([a]))
@@ -270,9 +308,10 @@ def simulate_deterministic_path(
             j_next = j + (-kappa_J * j + nu) * dt
             a = a + 0.5 * (h_s + h_func(np.array(s_next), grids.h_kind)) * dt
             s, i, q, j = s_next, i_next, q_next, j_next
+            s_path.append(s)
         times.append(N * dt)
         q_path.append(q)
         j_path.append(j)
-        results[theta] = {"t": times, "nu": rates_path, "q": q_path, "j": j_path}
+        results[theta] = {"t": times, "nu": rates_path, "q": q_path, "j": j_path, "s": s_path}
     return results
 
